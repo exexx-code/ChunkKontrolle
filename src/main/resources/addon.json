@@ -1,0 +1,8 @@
+{
+  "uuid": "%uuid%",
+  "name": "ChunkBug Checker",
+  "mainClass": "de.chunkbug.ChunkBugAddon",
+  "description": "Bot wirft signiertes Item und prüft Trichter + Lampe, ob der Chunk kaputt ist.",
+  "version": 1,
+  "author": "ChunkBug"
+}

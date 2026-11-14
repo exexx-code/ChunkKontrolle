@@ -1,0 +1,249 @@
+package de.chunkbug;
+
+import net.labymod.api.LabyModAddon;
+import net.labymod.settings.elements.BooleanElement;
+import net.labymod.settings.elements.ControlElement;
+import net.labymod.settings.elements.HeaderElement;
+import net.labymod.settings.elements.NumberElement;
+import net.labymod.settings.elements.SettingsElement;
+import net.labymod.settings.elements.StringElement;
+import net.labymod.utils.Material;
+import net.minecraft.block.Block;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.entity.EntityPlayerSP;
+import net.minecraft.client.gui.inventory.GuiChest;
+import net.minecraft.inventory.ContainerChest;
+import net.minecraft.util.EnumFacing;
+import net.minecraft.util.Vec3;
+import net.minecraft.entity.item.EntityItem;
+import net.minecraft.init.Blocks;
+import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NBTTagList;
+import net.minecraft.util.AxisAlignedBB;
+import net.minecraft.util.BlockPos;
+import net.minecraft.util.ChatComponentText;
+import net.minecraft.util.EnumChatFormatting;
+import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
+import net.minecraftforge.fml.common.gameevent.TickEvent;
+
+import com.google.gson.JsonObject;
+
+import java.util.List;
+import java.util.function.IntConsumer;
+
+/**
+ * Chunkbug-Checker:
+ * Bot steht auf seiner Position -> wirft ein signiertes Item aus der Hotbar ->
+ * liegt es nach X Sekunden noch rum (Trichter hat es nicht eingesaugt) oder ist die Lampe aus,
+ * ist der Chunk kaputt -> Bot geht für Y Minuten auf ein anderes GS und kommt zurück.
+ */
+public class ChunkBugAddon extends LabyModAddon {
+
+    private enum State { IDLE, SELECTED, WAITING, AWAY, RETURNING, CHEST_LOOK, CHEST_OPEN }
+
+    private static final double SEARCH_RADIUS = 8; // Blöcke um die Bot-Position, in denen nach dem geworfenen Item gesucht wird
+
+    private boolean enabled, checkLamp;
+    private int posX, posY, posZ, lampX, lampY, lampZ, chestX, chestY, chestZ, waitSeconds, awayMinutes;
+    private String signature, awayCommand, returnCommand;
+
+    private State state = State.IDLE;
+    private long stateSince, lastWarn;
+
+    @Override
+    public void onEnable() {
+        getApi().registerForgeListener(this);
+    }
+
+    @Override
+    public void loadConfig() {
+        JsonObject c = getConfig();
+        enabled = bool(c, "enabled", false);
+        checkLamp = bool(c, "checkLamp", true);
+        posX = num(c, "posX", 0);
+        posY = num(c, "posY", 64);
+        posZ = num(c, "posZ", 0);
+        lampX = num(c, "lampX", 0);
+        lampY = num(c, "lampY", 60);
+        lampZ = num(c, "lampZ", 0);
+        chestX = num(c, "chestX", 0);
+        chestY = num(c, "chestY", 64);
+        chestZ = num(c, "chestZ", 0);
+        waitSeconds = num(c, "waitSeconds", 30);
+        awayMinutes = num(c, "awayMinutes", 10);
+        signature = str(c, "signature", "");
+        awayCommand = str(c, "awayCommand", "/p h AnderesGS");
+        returnCommand = str(c, "returnCommand", "/p h MeinGS");
+    }
+
+    @Override
+    protected void fillSettings(List<SettingsElement> s) {
+        s.add(new BooleanElement("Bot aktiv", this, icon(Material.LEVER), "enabled", enabled).addCallback(v -> { enabled = v; state = State.IDLE; }));
+
+        s.add(new HeaderElement("Bot-Position (wo er wirft)"));
+        s.add(coord("Bot X", "posX", posX, v -> posX = v));
+        s.add(coord("Bot Y", "posY", posY, v -> posY = v));
+        s.add(coord("Bot Z", "posZ", posZ, v -> posZ = v));
+
+        s.add(new HeaderElement("Lampe (AN = Chunk ok, AUS = kaputt)"));
+        s.add(new BooleanElement("Lampe prüfen", this, icon(Material.REDSTONE_LAMP_OFF), "checkLamp", checkLamp).addCallback(v -> checkLamp = v));
+        s.add(coord("Lampe X", "lampX", lampX, v -> lampX = v));
+        s.add(coord("Lampe Y", "lampY", lampY, v -> lampY = v));
+        s.add(coord("Lampe Z", "lampZ", lampZ, v -> lampZ = v));
+
+        s.add(new HeaderElement("Kiste mit signierten Items (max. 4 Blöcke vom Bot)"));
+        s.add(coord("Kiste X", "chestX", chestX, v -> chestX = v));
+        s.add(coord("Kiste Y", "chestY", chestY, v -> chestY = v));
+        s.add(coord("Kiste Z", "chestZ", chestZ, v -> chestZ = v));
+
+        s.add(new HeaderElement("Item & Zeiten"));
+        s.add(new StringElement("Signatur-Text (leer = Bot-Name)", this, icon(Material.NAME_TAG), "signature", signature).addCallback(v -> signature = v));
+        s.add(number("Wartezeit (Sek.)", Material.WATCH, "waitSeconds", waitSeconds, v -> waitSeconds = v).setRange(5, 600));
+        s.add(number("Weg-Zeit (Min.)", Material.WATCH, "awayMinutes", awayMinutes, v -> awayMinutes = v).setRange(1, 120));
+
+        s.add(new HeaderElement("Befehle"));
+        s.add(new StringElement("Befehl: anderes GS", this, icon(Material.ENDER_PEARL), "awayCommand", awayCommand).addCallback(v -> awayCommand = v));
+        s.add(new StringElement("Befehl: zurück", this, icon(Material.ENDER_PEARL), "returnCommand", returnCommand).addCallback(v -> returnCommand = v));
+    }
+
+    @SubscribeEvent
+    public void onTick(TickEvent.ClientTickEvent e) {
+        if (e.phase != TickEvent.Phase.END) return;
+        Minecraft mc = Minecraft.getMinecraft();
+        EntityPlayerSP p = mc.thePlayer;
+        if (!enabled || p == null || mc.theWorld == null) return;
+
+        long now = System.currentTimeMillis();
+        long since = now - stateSince;
+        boolean atPos = p.getDistanceSq(posX + 0.5, posY, posZ + 0.5) < 4; // max. 2 Blöcke daneben
+
+        switch (state) {
+            case IDLE:
+                if (!atPos) return;
+                if (lampOff(mc)) { broken(p, "Lampe ist AUS"); return; }
+                int slot = signedSlot(p);
+                if (slot < 0) {
+                    if (now - lastWarn > 30_000) { lastWarn = now; set(State.CHEST_LOOK); } // max. alle 30s zur Kiste
+                    return;
+                }
+                if (slot >= 9) { mc.playerController.windowClick(0, slot, 8, 2, p); return; } // aus dem Inventar in Hotbar-Slot 9 tauschen
+                p.inventory.currentItem = slot; // Slot-Wechsel wird im nächsten Tick an den Server geschickt
+                set(State.SELECTED);
+                return;
+
+            case CHEST_LOOK: // erst zur Kiste schauen, im nächsten Tick klicken
+                lookAt(p, chestX + 0.5, chestY + 0.5, chestZ + 0.5);
+                if (since < 200) return;
+                mc.playerController.onPlayerRightClick(p, mc.theWorld, p.getHeldItem(), new BlockPos(chestX, chestY, chestZ),
+                        EnumFacing.UP, new Vec3(chestX + 0.5, chestY + 1, chestZ + 0.5));
+                set(State.CHEST_OPEN);
+                return;
+
+            case CHEST_OPEN:
+                if (!(mc.currentScreen instanceof GuiChest)) {
+                    if (since > 5000) { msg(p, "§cKiste ging nicht auf – Koordinaten/Abstand prüfen."); set(State.IDLE); }
+                    return;
+                }
+                ContainerChest chest = (ContainerChest) p.openContainer;
+                int size = chest.getLowerChestInventory().getSizeInventory();
+                boolean took = false;
+                for (int i = 0; i < size && !took; i++) {
+                    if (isSigned(chest.getSlot(i).getStack(), p)) {
+                        mc.playerController.windowClick(chest.windowId, i, 0, 1, p); // Shift-Klick: ganzer Stack ins Inventar
+                        took = true;
+                    }
+                }
+                msg(p, took ? "Signierte Items aus der Kiste genommen." : "§cKeine signierten Items mehr in der Kiste!");
+                p.closeScreen();
+                if (took) lastWarn = 0;
+                set(State.IDLE);
+                return;
+
+            case SELECTED:
+                p.dropOneItem(false);
+                set(State.WAITING);
+                return;
+
+            case WAITING:
+                if (lampOff(mc)) { broken(p, "Lampe ist AUS"); return; }
+                if (since < waitSeconds * 1000L) return;
+                if (signedItemLying(mc, p)) broken(p, "Item nach " + waitSeconds + "s nicht eingesaugt");
+                else { msg(p, "§aChunk OK – Item wurde eingesaugt."); set(State.IDLE); }
+                return;
+
+            case AWAY:
+                if (since < awayMinutes * 60_000L) return;
+                msg(p, "Gehe zurück zur Bot-Position.");
+                p.sendChatMessage(returnCommand);
+                set(State.RETURNING);
+                return;
+
+            case RETURNING:
+                if (atPos) { msg(p, "Zurück – teste weiter."); set(State.IDLE); }
+                else if (since > 60_000) { p.sendChatMessage(returnCommand); set(State.RETURNING); } // TP fehlgeschlagen -> nochmal
+        }
+    }
+
+    private void broken(EntityPlayerSP p, String reason) {
+        msg(p, "§cChunk KAPUTT (" + reason + ") – gehe " + awayMinutes + " Min. weg.");
+        p.sendChatMessage(awayCommand);
+        set(State.AWAY);
+    }
+
+    private boolean lampOff(Minecraft mc) {
+        if (!checkLamp) return false;
+        Block b = mc.theWorld.getBlockState(new BlockPos(lampX, lampY, lampZ)).getBlock();
+        return b == Blocks.redstone_lamp; // nur die AUS-Lampe zählt; nicht geladen/falsche Koordinate wird ignoriert
+    }
+
+    /** 0-8 = Hotbar, 9-35 = Inventar (gleich der Slot-Nummer im Spieler-Container). */
+    private int signedSlot(EntityPlayerSP p) {
+        for (int i = 0; i < 36; i++) if (isSigned(p.inventory.mainInventory[i], p)) return i;
+        return -1;
+    }
+
+    private static void lookAt(EntityPlayerSP p, double x, double y, double z) {
+        double dx = x - p.posX, dy = y - (p.posY + p.getEyeHeight()), dz = z - p.posZ;
+        p.rotationYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90);
+        p.rotationPitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
+    }
+
+    private boolean signedItemLying(Minecraft mc, EntityPlayerSP p) {
+        AxisAlignedBB box = new AxisAlignedBB(posX - SEARCH_RADIUS, posY - SEARCH_RADIUS, posZ - SEARCH_RADIUS,
+                posX + SEARCH_RADIUS, posY + SEARCH_RADIUS, posZ + SEARCH_RADIUS);
+        for (EntityItem item : mc.theWorld.getEntitiesWithinAABB(EntityItem.class, box))
+            if (isSigned(item.getEntityItem(), p)) return true;
+        return false;
+    }
+
+    /** Signiert = Name oder Lore enthält den Signatur-Text (leer = Name des Bots). */
+    private boolean isSigned(ItemStack stack, EntityPlayerSP p) {
+        if (stack == null) return false;
+        StringBuilder text = new StringBuilder(stack.getDisplayName());
+        if (stack.hasTagCompound()) {
+            NBTTagList lore = stack.getTagCompound().getCompoundTag("display").getTagList("Lore", 8);
+            for (int i = 0; i < lore.tagCount(); i++) text.append('\n').append(lore.getStringTagAt(i));
+        }
+        String needle = signature.trim().isEmpty() ? p.getName() : signature.trim();
+        return EnumChatFormatting.getTextWithoutFormattingCodes(text.toString()).toLowerCase().contains(needle.toLowerCase());
+    }
+
+    private void set(State s) { state = s; stateSince = System.currentTimeMillis(); }
+
+    private static void msg(EntityPlayerSP p, String s) { p.addChatMessage(new ChatComponentText("§6[ChunkBug] §f" + s)); }
+
+    // NumberElement hat keinen Auto-Speichern-Konstruktor -> selbst in die Config schreiben
+    private NumberElement number(String name, Material m, String key, int value, IntConsumer set) {
+        return new NumberElement(name, icon(m), value).addCallback(v -> { set.accept(v); getConfig().addProperty(key, v); saveConfig(); });
+    }
+
+    private NumberElement coord(String name, String key, int value, IntConsumer set) {
+        return number(name, Material.COMPASS, key, value, set).setRange(-30_000_000, 30_000_000);
+    }
+
+    private static ControlElement.IconData icon(Material m) { return new ControlElement.IconData(m); }
+
+    private static boolean bool(JsonObject c, String k, boolean d) { return c.has(k) ? c.get(k).getAsBoolean() : d; }
+    private static int num(JsonObject c, String k, int d) { return c.has(k) ? c.get(k).getAsInt() : d; }
+    private static String str(JsonObject c, String k, String d) { return c.has(k) ? c.get(k).getAsString() : d; }
+}
