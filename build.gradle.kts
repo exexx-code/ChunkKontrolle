@@ -1,7 +1,7 @@
 // LabyMod 3 Addon für 1.8.9. libs/lm_api_mc1.8.9.jar lädt der GitHub-Build (.github/workflows/build.yml).
 plugins {
     java
-    id("gg.essential.loom") version "0.10.0.+"
+    id("gg.essential.loom") version "1.15.52"
     id("dev.architectury.architectury-pack200") version "0.1.3"
 }
 
