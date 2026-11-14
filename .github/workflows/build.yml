@@ -22,7 +22,10 @@ jobs:
           mkdir -p libs
           curl -sfLo libs/lm_api_mc1.8.9.jar https://raw.githubusercontent.com/Antimoxs/HyPlus/2c846b5ed3679cf1292120d026619aa5c69a7796/libs/lm_api_mc1.8.9.jar
           echo "54238fbdf7226a67b79165778591e770ec1037cec15e19dd5e3027e40f931020  libs/lm_api_mc1.8.9.jar" | sha256sum -c
-      - run: gradle build --no-daemon
+      - run: set -o pipefail; gradle build --no-daemon 2>&1 | tee build.log
+      - name: Fehler anzeigen
+        if: failure()
+        run: echo "::error::$(grep -E -A6 'error:|What went wrong|Could not' build.log | head -60 | sed -z 's/%/%25/g; s/\n/%0A/g')"
       - uses: actions/upload-artifact@v4
         with:
           name: ChunkBugAddon
