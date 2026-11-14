@@ -12,10 +12,10 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 8
+          java-version: 17
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 6.8.3
+          gradle-version: 8.8
       # LabyMod 3 API gibt es offiziell nicht mehr zum Download -> Kopie aus einem öffentlichen Addon, fest auf Commit + Prüfsumme
       - name: LabyMod-API laden
         run: |
