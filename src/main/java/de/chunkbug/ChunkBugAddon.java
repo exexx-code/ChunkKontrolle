@@ -51,6 +51,7 @@ public class ChunkBugAddon extends LabyModAddon {
 
     private State state = State.IDLE;
     private long stateSince, lastWarn;
+    private boolean lampSeenOn;
 
     @Override
     public void onEnable() {
@@ -168,7 +169,6 @@ public class ChunkBugAddon extends LabyModAddon {
         switch (state) {
             case IDLE:
                 if (!atPos) return;
-                if (lampOff(mc)) { broken(p, "Lampe ist AUS"); return; }
                 int slot = signedSlot(p);
                 if (slot < 0) {
                     if (now - lastWarn > 30_000) { lastWarn = now; set(State.CHEST_LOOK); } // max. alle 30s zur Kiste
@@ -209,14 +209,17 @@ public class ChunkBugAddon extends LabyModAddon {
 
             case SELECTED:
                 p.dropOneItem(false);
+                lampSeenOn = false;
                 set(State.WAITING);
                 return;
 
-            case WAITING:
-                if (lampOff(mc)) { broken(p, "Lampe ist AUS"); return; }
+            case WAITING: // erst nach dem Wurf: geht die Lampe irgendwann in der Wartezeit an?
+                Block lamp = lampBlock(mc);
+                if (lamp == Blocks.lit_redstone_lamp) lampSeenOn = true;
                 if (since < waitSeconds * 1000L) return;
                 if (signedItemLying(mc, p)) broken(p, "Item nach " + waitSeconds + "s nicht eingesaugt");
-                else { msg(p, "§aChunk OK – Item wurde eingesaugt."); set(State.IDLE); }
+                else if (checkLamp && !lampSeenOn && lamp == Blocks.redstone_lamp) broken(p, "Lampe ist nach dem Wurf nicht angegangen");
+                else { msg(p, "§aChunk OK – Item eingesaugt" + (lampSeenOn ? ", Lampe ging an." : ".")); set(State.IDLE); }
                 return;
 
             case AWAY:
@@ -238,10 +241,9 @@ public class ChunkBugAddon extends LabyModAddon {
         set(State.AWAY);
     }
 
-    private boolean lampOff(Minecraft mc) {
-        if (!checkLamp) return false;
-        Block b = mc.theWorld.getBlockState(new BlockPos(lampX, lampY, lampZ)).getBlock();
-        return b == Blocks.redstone_lamp; // nur die AUS-Lampe zählt; nicht geladen/falsche Koordinate wird ignoriert
+    // keine Lampe an der Stelle (nicht geladen/falsche Koordinate) -> Lampenprüfung wird ignoriert
+    private Block lampBlock(Minecraft mc) {
+        return mc.theWorld.getBlockState(new BlockPos(lampX, lampY, lampZ)).getBlock();
     }
 
     /** 0-8 = Hotbar, 9-35 = Inventar (gleich der Slot-Nummer im Spieler-Container). */
