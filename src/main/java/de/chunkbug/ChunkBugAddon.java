@@ -41,7 +41,7 @@ import java.util.function.IntConsumer;
  */
 public class ChunkBugAddon extends LabyModAddon {
 
-    private enum State { IDLE, SELECTED, WAITING, AWAY, RETURNING, CHEST_LOOK, CHEST_OPEN }
+    private enum State { IDLE, SELECTED, WAITING, AWAY, RETURNING, CHEST_LOOK, CHEST_OPEN, CHEST_TAKE, CHEST_CLOSE }
 
     private static final double SEARCH_RADIUS = 8; // Blöcke um die Bot-Position, in denen nach dem geworfenen Item gesucht wird
 
@@ -52,6 +52,7 @@ public class ChunkBugAddon extends LabyModAddon {
     private State state = State.IDLE;
     private long stateSince, lastWarn;
     private boolean lampSeenOn;
+    private int chestDelay;
 
     @Override
     public void onEnable() {
@@ -118,6 +119,7 @@ public class ChunkBugAddon extends LabyModAddon {
         chestX = num(c, "chestX", 0);
         chestY = num(c, "chestY", 64);
         chestZ = num(c, "chestZ", 0);
+        chestDelay = num(c, "chestDelay", 1000);
         waitSeconds = num(c, "waitSeconds", 30);
         awayMinutes = num(c, "awayMinutes", 10);
         signature = str(c, "signature", "");
@@ -149,6 +151,7 @@ public class ChunkBugAddon extends LabyModAddon {
         s.add(new StringElement("Signatur-Text (leer = Bot-Name)", this, icon(Material.NAME_TAG), "signature", signature).addCallback(v -> signature = v));
         s.add(number("Wartezeit (Sek.)", Material.WATCH, "waitSeconds", waitSeconds, v -> waitSeconds = v).setRange(5, 600));
         s.add(number("Weg-Zeit (Min.)", Material.WATCH, "awayMinutes", awayMinutes, v -> awayMinutes = v).setRange(1, 120));
+        s.add(number("Kisten-Delay (ms)", Material.WATCH, "chestDelay", chestDelay, v -> chestDelay = v).setRange(100, 10_000));
 
         s.add(new HeaderElement("Befehle"));
         s.add(new StringElement("Befehl: anderes GS", this, icon(Material.ENDER_PEARL), "awayCommand", awayCommand).addCallback(v -> awayCommand = v));
@@ -181,17 +184,20 @@ public class ChunkBugAddon extends LabyModAddon {
 
             case CHEST_LOOK: // erst zur Kiste schauen, im nächsten Tick klicken
                 lookAt(p, chestX + 0.5, chestY + 0.5, chestZ + 0.5);
-                if (since < 200) return;
+                if (since < chestDelay) return;
                 mc.playerController.onPlayerRightClick(p, mc.theWorld, p.getHeldItem(), new BlockPos(chestX, chestY, chestZ),
                         EnumFacing.UP, new Vec3(chestX + 0.5, chestY + 1, chestZ + 0.5));
                 set(State.CHEST_OPEN);
                 return;
 
             case CHEST_OPEN:
-                if (!(mc.currentScreen instanceof GuiChest)) {
-                    if (since > 5000) { msg(p, "§cKiste ging nicht auf – Koordinaten/Abstand prüfen."); set(State.IDLE); }
-                    return;
-                }
+                if (mc.currentScreen instanceof GuiChest) set(State.CHEST_TAKE);
+                else if (since > 5000 + chestDelay) { msg(p, "§cKiste ging nicht auf – Koordinaten/Abstand prüfen."); set(State.IDLE); }
+                return;
+
+            case CHEST_TAKE: // warten, bis der Server den Kisten-Inhalt geschickt hat
+                if (since < chestDelay) return;
+                if (!(mc.currentScreen instanceof GuiChest)) { set(State.IDLE); return; }
                 ContainerChest chest = (ContainerChest) p.openContainer;
                 int size = chest.getLowerChestInventory().getSizeInventory();
                 boolean took = false;
@@ -202,8 +208,13 @@ public class ChunkBugAddon extends LabyModAddon {
                     }
                 }
                 msg(p, took ? "Signierte Items aus der Kiste genommen." : "§cKeine signierten Items mehr in der Kiste!");
-                p.closeScreen();
                 if (took) lastWarn = 0;
+                set(State.CHEST_CLOSE);
+                return;
+
+            case CHEST_CLOSE:
+                if (since < chestDelay) return;
+                if (mc.currentScreen instanceof GuiChest) p.closeScreen();
                 set(State.IDLE);
                 return;
 
