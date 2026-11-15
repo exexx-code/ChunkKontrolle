@@ -29,8 +29,13 @@ import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
 import java.util.List;
+import java.util.Scanner;
 import java.util.function.IntConsumer;
 
 /**
@@ -55,6 +60,13 @@ public class ChunkBugAddon extends LabyModAddon {
     private int chestDelay;
     private float aimYaw, aimPitch; // Wurfrichtung (zum Trichter)
     private boolean hasAim;
+
+    // Lizenz-Server = dein Discord-Bot (discord-bot/lizenz.js). shortcut: nur HTTP, mit Domain + HTTPS sicherer
+    private static final String LICENSE_URL = "http://212.227.101.186:3000/lizenz";
+    private static final long LICENSE_INTERVAL = 30 * 60_000L;
+    private String licenseKey;
+    private volatile boolean licensed;
+    private volatile long lastLicenseCheck; // 0 = beim nächsten Tick prüfen
 
     @Override
     public void onEnable() {
@@ -129,12 +141,15 @@ public class ChunkBugAddon extends LabyModAddon {
         signature = str(c, "signature", "");
         awayCommand = str(c, "awayCommand", "/p h AnderesGS");
         returnCommand = str(c, "returnCommand", "/p h MeinGS");
+        licenseKey = str(c, "licenseKey", "");
         hasAim = c.has("yaw");
         if (hasAim) { aimYaw = c.get("yaw").getAsFloat(); aimPitch = c.get("pitch").getAsFloat(); }
     }
 
     @Override
     protected void fillSettings(List<SettingsElement> s) {
+        s.add(new StringElement("Lizenz-Key (Discord)", this, icon(Material.PAPER), "licenseKey", licenseKey)
+                .addCallback(v -> { licenseKey = v.trim(); licensed = false; lastLicenseCheck = 0; }));
         s.add(new BooleanElement("Bot aktiv", this, icon(Material.LEVER), "enabled", enabled).addCallback(v -> { enabled = v; state = State.IDLE; }));
 
         s.add(new HeaderElement("Bot-Position (wo er wirft)"));
@@ -172,6 +187,8 @@ public class ChunkBugAddon extends LabyModAddon {
         if (!enabled || p == null || mc.theWorld == null) return;
 
         long now = System.currentTimeMillis();
+        if (now - lastLicenseCheck > LICENSE_INTERVAL) { lastLicenseCheck = now; checkLicense(mc.getSession().getPlayerID(), p); }
+        if (!licensed) return;
         long since = now - stateSince;
         boolean atPos = p.getDistanceSq(posX + 0.5, posY, posZ + 0.5) < 4; // max. 2 Blöcke daneben
 
@@ -255,6 +272,32 @@ public class ChunkBugAddon extends LabyModAddon {
                 if (atPos) { msg(p, "Zurück – teste weiter."); set(State.IDLE); }
                 else if (since > 60_000) { p.sendChatMessage(returnCommand); set(State.RETURNING); } // TP fehlgeschlagen -> nochmal
         }
+    }
+
+    /** Fragt im Hintergrund beim Discord-Bot nach, ob Key + Minecraft-Account freigeschaltet sind. */
+    private void checkLicense(String uuid, EntityPlayerSP p) {
+        String key = licenseKey;
+        new Thread(() -> {
+            String error = null;
+            try {
+                HttpURLConnection con = (HttpURLConnection) new URL(LICENSE_URL + "?key=" + URLEncoder.encode(key, "UTF-8")
+                        + "&uuid=" + URLEncoder.encode(uuid, "UTF-8")).openConnection();
+                con.setConnectTimeout(5000);
+                con.setReadTimeout(5000);
+                try (Scanner sc = new Scanner(con.getInputStream(), "UTF-8")) {
+                    JsonObject r = new JsonParser().parse(sc.useDelimiter("\\A").next()).getAsJsonObject();
+                    boolean ok = r.get("ok").getAsBoolean();
+                    if (!ok) error = r.has("grund") ? r.get("grund").getAsString() : "ungültig";
+                    if (ok && !licensed) Minecraft.getMinecraft().addScheduledTask(() -> msg(p, "§aLizenz OK."));
+                    licensed = ok;
+                }
+            } catch (Exception ex) {
+                error = "Lizenz-Server nicht erreichbar"; // bisheriges Ergebnis bleibt, ohne gültige Lizenz in 1 Min. neu versuchen
+                if (!licensed) lastLicenseCheck = System.currentTimeMillis() - LICENSE_INTERVAL + 60_000;
+            }
+            String text = error;
+            if (text != null) Minecraft.getMinecraft().addScheduledTask(() -> msg(p, "§cLizenz: " + text + " – Key im Menü eintragen (Discord: /lizenz)."));
+        }, "ChunkBug-Lizenz").start();
     }
 
     private void broken(EntityPlayerSP p, String reason) {

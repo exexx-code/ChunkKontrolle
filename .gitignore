@@ -2,3 +2,5 @@ build/
 .gradle/
 libs/
 run/
+discord-bot/lizenzen.json
+discord-bot/lizenzen.json.tmp

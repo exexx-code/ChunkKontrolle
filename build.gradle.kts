@@ -5,7 +5,7 @@ plugins {
     id("dev.architectury.architectury-pack200") version "0.1.3"
 }
 
-version = "1.0.4"
+version = "1.1.0"
 java.toolchain.languageVersion.set(JavaLanguageVersion.of(8))
 
 loom {
