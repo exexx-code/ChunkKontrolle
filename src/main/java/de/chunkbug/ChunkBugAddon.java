@@ -1,6 +1,8 @@
 package de.chunkbug;
 
 import net.labymod.api.LabyModAddon;
+import net.labymod.api.events.MessageSendEvent;
+import net.minecraft.util.MovingObjectPosition;
 import net.labymod.settings.elements.BooleanElement;
 import net.labymod.settings.elements.ControlElement;
 import net.labymod.settings.elements.HeaderElement;
@@ -53,7 +55,53 @@ public class ChunkBugAddon extends LabyModAddon {
     @Override
     public void onEnable() {
         getApi().registerForgeListener(this);
+        getApi().getEventManager().register((MessageSendEvent) this::onChat);
     }
+
+    /** #cb-Befehle im Chat. true = Nachricht nicht an den Server schicken. */
+    private boolean onChat(String message) {
+        if (!message.toLowerCase().startsWith("#cb")) return false;
+        Minecraft mc = Minecraft.getMinecraft();
+        EntityPlayerSP p = mc.thePlayer;
+        if (p == null) return true;
+        String cmd = message.length() > 3 ? message.substring(3).trim().toLowerCase() : "";
+        BlockPos look = mc.objectMouseOver != null && mc.objectMouseOver.typeOfHit == MovingObjectPosition.MovingObjectType.BLOCK
+                ? mc.objectMouseOver.getBlockPos() : null;
+
+        switch (cmd) {
+            case "start": setBool("enabled", enabled = true); set(State.IDLE); msg(p, "§aBot gestartet."); break;
+            case "stop": setBool("enabled", enabled = false); set(State.IDLE); msg(p, "§cBot gestoppt."); break;
+            case "pos":
+                BlockPos me = new BlockPos(p);
+                setNum("posX", posX = me.getX()); setNum("posY", posY = me.getY()); setNum("posZ", posZ = me.getZ());
+                msg(p, "Bot-Position = " + posX + " " + posY + " " + posZ);
+                break;
+            case "lampe":
+                if (look == null) { msg(p, "§cSchau auf die Lampe."); break; }
+                setNum("lampX", lampX = look.getX()); setNum("lampY", lampY = look.getY()); setNum("lampZ", lampZ = look.getZ());
+                msg(p, "Lampe = " + lampX + " " + lampY + " " + lampZ);
+                break;
+            case "kiste":
+                if (look == null) { msg(p, "§cSchau auf die Kiste."); break; }
+                setNum("chestX", chestX = look.getX()); setNum("chestY", chestY = look.getY()); setNum("chestZ", chestZ = look.getZ());
+                msg(p, "Kiste = " + chestX + " " + chestY + " " + chestZ);
+                break;
+            case "status":
+                Block lamp = mc.theWorld.getBlockState(new BlockPos(lampX, lampY, lampZ)).getBlock();
+                int slot = signedSlot(p);
+                msg(p, "Aktiv: " + (enabled ? "§aja" : "§cnein") + "§f | Zustand: " + state
+                        + " | Auf Position: " + (p.getDistanceSq(posX + 0.5, posY, posZ + 0.5) < 4 ? "§aja" : "§cnein"));
+                msg(p, "Lampe: " + (lamp == Blocks.lit_redstone_lamp ? "§aAN" : lamp == Blocks.redstone_lamp ? "§cAUS" : "§ekeine Lampe/nicht geladen")
+                        + "§f | Signiertes Item: " + (slot < 0 ? "§cnicht im Inventar" : "§aSlot " + (slot + 1)));
+                break;
+            default:
+                msg(p, "#cb start | stop | status | pos (dein Standpunkt) | lampe / kiste (Block, auf den du schaust)");
+        }
+        return true;
+    }
+
+    private void setNum(String key, int v) { getConfig().addProperty(key, v); saveConfig(); }
+    private void setBool(String key, boolean v) { getConfig().addProperty(key, v); saveConfig(); }
 
     @Override
     public void loadConfig() {
