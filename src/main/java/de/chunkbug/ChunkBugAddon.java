@@ -53,6 +53,8 @@ public class ChunkBugAddon extends LabyModAddon {
     private long stateSince, lastWarn;
     private boolean lampSeenOn;
     private int chestDelay;
+    private float aimYaw, aimPitch; // Wurfrichtung (zum Trichter)
+    private boolean hasAim;
 
     @Override
     public void onEnable() {
@@ -76,7 +78,9 @@ public class ChunkBugAddon extends LabyModAddon {
             case "pos":
                 BlockPos me = new BlockPos(p);
                 setNum("posX", posX = me.getX()); setNum("posY", posY = me.getY()); setNum("posZ", posZ = me.getZ());
-                msg(p, "Bot-Position = " + posX + " " + posY + " " + posZ);
+                aimYaw = p.rotationYaw; aimPitch = p.rotationPitch; hasAim = true;
+                getConfig().addProperty("yaw", aimYaw); getConfig().addProperty("pitch", aimPitch); saveConfig();
+                msg(p, "Bot-Position = " + posX + " " + posY + " " + posZ + " + Wurfrichtung gespeichert (dahin, wo du schaust).");
                 break;
             case "lampe":
                 if (look == null) { msg(p, "§cSchau auf die Lampe."); break; }
@@ -97,7 +101,7 @@ public class ChunkBugAddon extends LabyModAddon {
                         + "§f | Signiertes Item: " + (slot < 0 ? "§cnicht im Inventar" : "§aSlot " + (slot + 1)));
                 break;
             default:
-                msg(p, "#cb start | stop | status | pos (dein Standpunkt) | lampe / kiste (Block, auf den du schaust)");
+                msg(p, "#cb start | stop | status | pos (Standpunkt + Wurfrichtung) | lampe / kiste (Block, auf den du schaust)");
         }
         return true;
     }
@@ -125,6 +129,8 @@ public class ChunkBugAddon extends LabyModAddon {
         signature = str(c, "signature", "");
         awayCommand = str(c, "awayCommand", "/p h AnderesGS");
         returnCommand = str(c, "returnCommand", "/p h MeinGS");
+        hasAim = c.has("yaw");
+        if (hasAim) { aimYaw = c.get("yaw").getAsFloat(); aimPitch = c.get("pitch").getAsFloat(); }
     }
 
     @Override
@@ -174,11 +180,16 @@ public class ChunkBugAddon extends LabyModAddon {
                 if (!atPos) return;
                 int slot = signedSlot(p);
                 if (slot < 0) {
-                    if (now - lastWarn > 30_000) { lastWarn = now; set(State.CHEST_LOOK); } // max. alle 30s zur Kiste
+                    if (now - lastWarn > 30_000) { // max. alle 30s zur Kiste
+                        lastWarn = now;
+                        if (!hasAim) { aimYaw = p.rotationYaw; aimPitch = p.rotationPitch; hasAim = true; } // ohne #cb pos: Blickrichtung vor der Kiste merken
+                        set(State.CHEST_LOOK);
+                    }
                     return;
                 }
                 if (slot >= 9) { mc.playerController.windowClick(0, slot, 8, 2, p); return; } // aus dem Inventar in Hotbar-Slot 9 tauschen
                 p.inventory.currentItem = slot; // Slot-Wechsel wird im nächsten Tick an den Server geschickt
+                if (hasAim) { p.rotationYaw = aimYaw; p.rotationPitch = aimPitch; } // nach Kiste/Teleport wieder zum Trichter drehen
                 set(State.SELECTED);
                 return;
 
@@ -207,8 +218,7 @@ public class ChunkBugAddon extends LabyModAddon {
                         took = true;
                     }
                 }
-                msg(p, took ? "Signierte Items aus der Kiste genommen." : "§cKeine signierten Items mehr in der Kiste!");
-                if (took) lastWarn = 0;
+                msg(p, took ? "Signierte Items aus der Kiste genommen." : "§cKeine signierten Items mehr in der Kiste! Nächster Versuch in 30s.");
                 set(State.CHEST_CLOSE);
                 return;
 
@@ -218,7 +228,8 @@ public class ChunkBugAddon extends LabyModAddon {
                 set(State.IDLE);
                 return;
 
-            case SELECTED:
+            case SELECTED: // kurz warten, damit Slot und Blickrichtung beim Server sind (er wirft in Blickrichtung)
+                if (since < 300) return;
                 p.dropOneItem(false);
                 lampSeenOn = false;
                 set(State.WAITING);

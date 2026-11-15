@@ -3,6 +3,6 @@
   "name": "ChunkBug Checker",
   "mainClass": "de.chunkbug.ChunkBugAddon",
   "description": "Bot wirft signiertes Item und prüft Trichter + Lampe, ob der Chunk kaputt ist.",
-  "version": 4,
+  "version": 5,
   "author": "ChunkBug"
 }
